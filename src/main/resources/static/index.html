@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitLab 项目列表</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif; margin: 24px; }
+        h1 { margin: 0 0 16px; font-size: 20px; }
+        .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+        label { font-size: 14px; color: #555; }
+        input[type="text"] { padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px; width: 220px; }
+        button { padding: 6px 12px; border: 1px solid #1f883d; background: #2da44e; color: #fff; border-radius: 6px; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: not-allowed; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #eaecef; padding: 8px 10px; text-align: left; font-size: 14px; }
+        th { background: #f6f8fa; }
+        a { color: #0969da; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .muted { color: #6e7781; font-size: 12px; }
+        .error { color: #d1242f; margin-top: 8px; }
+        .empty { color: #6e7781; padding: 16px 0; }
+        .notice { color: #6e7781; margin-bottom: 8px; }
+        .hidden { display: none; }
+    </style>
+    <script>
+        function getSavedUser() {
+            const v = (localStorage.getItem('mergeUser') || '').trim();
+            return v || '';
+        }
+
+        function getUserHeadersOrNull(explicitUser) {
+            const user = (explicitUser !== undefined ? explicitUser : getSavedUser());
+            if (!user) return null;
+            // 为兼容浏览器头部限制，这里进行 URI 编码；后端需按需解码
+            return { 'user': encodeURIComponent(user) };
+        }
+        async function saveUser() {
+            const user = document.getElementById('userInput').value.trim();
+            localStorage.setItem('mergeUser', user);
+            const tip = document.getElementById('saveTip');
+            const notice = document.getElementById('userNotice');
+            const tableWrap = document.getElementById('tableWrap');
+            tip.textContent = user ? '已保存用户：' + user : '已清空用户';
+            setTimeout(() => tip.textContent = '', 1500);
+            if (!user) {
+                localStorage.setItem('userValidated', 'false');
+                notice.textContent = '请输入用户标识';
+                tableWrap.classList.add('hidden');
+                return;
+            }
+            try {
+                const ok = await checkUser(user);
+                localStorage.setItem('userValidated', ok ? 'true' : 'false');
+                if (ok) {
+                    notice.textContent = '';
+                    tableWrap.classList.remove('hidden');
+                    await loadProjects();
+                } else {
+                    notice.textContent = '用户不存在';
+                    tableWrap.classList.add('hidden');
+                }
+            } catch (e) {
+                notice.textContent = '校验失败，请稍后重试';
+                tableWrap.classList.add('hidden');
+            }
+        }
+
+        async function checkUser(user) {
+            // /checkUser 不需要也不依赖请求头中的 user
+            const resp = await fetch('/merge/checkUser?user=' + encodeURIComponent(user));
+            const json = await resp.json();
+            if (!json || json.code !== 0) return false;
+            // 按你的要求：返回为 false 视为用户不存在
+            return Boolean(json.data);
+        }
+
+        async function loadProjects() {
+            const tbody = document.querySelector('#projectTableBody');
+            const errorBox = document.getElementById('errorBox');
+            tbody.innerHTML = '';
+            errorBox.textContent = '';
+            const headers = getUserHeadersOrNull();
+            if (!headers) return; // 无 user 不请求
+            try {
+                const resp = await fetch('/merge/getGitlabProject', { headers });
+                const json = await resp.json();
+                if (json && json.code === 0 && Array.isArray(json.data)) {
+                    if (json.data.length === 0) {
+                        document.getElementById('empty').style.display = 'block';
+                        return;
+                    }
+                    document.getElementById('empty').style.display = 'none';
+                    json.data.forEach((item, idx) => {
+                        const tr = document.createElement('tr');
+                        const tdIdx = document.createElement('td');
+                        tdIdx.textContent = String(idx + 1);
+                        const tdName = document.createElement('td');
+                        const a = document.createElement('a');
+                        a.textContent = item.projectName || '-';
+                        const url = new URL(window.location.origin + window.location.pathname.replace(/index\.html?$/, 'detail.html'));
+                        url.searchParams.set('gitPath', item.projectPath || '');
+                        url.searchParams.set('projectName', item.projectName || '');
+                        a.href = url.toString();
+                        tdName.appendChild(a);
+                        tr.appendChild(tdIdx);
+                        tr.appendChild(tdName);
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    throw new Error((json && json.message) || '响应格式异常');
+                }
+            } catch (e) {
+                errorBox.textContent = '加载项目失败：' + e.message;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedUser = localStorage.getItem('mergeUser') || '';
+            document.getElementById('userInput').value = savedUser;
+            const validated = localStorage.getItem('userValidated') === 'true';
+            const notice = document.getElementById('userNotice');
+            const tableWrap = document.getElementById('tableWrap');
+            if (!savedUser) {
+                notice.textContent = '请输入用户标识';
+                tableWrap.classList.add('hidden');
+            } else if (!validated) {
+                notice.textContent = '请点击保存以校验用户';
+                tableWrap.classList.add('hidden');
+            } else {
+                notice.textContent = '';
+                tableWrap.classList.remove('hidden');
+                loadProjects();
+            }
+        });
+    </script>
+    </head>
+<body>
+    <h1>GitLab 项目列表</h1>
+    <div class="toolbar">
+        <label for="userInput">用户标识（作为请求头 user，用于部分接口）</label>
+        <input id="userInput" type="text" placeholder="输入用户名" />
+        <button onclick="saveUser()">保存</button>
+        <span id="saveTip" class="muted"></span>
+    </div>
+    <div id="userNotice" class="notice"></div>
+
+    <div id="tableWrap">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 80px;">序号</th>
+                    <th>项目名称</th>
+                </tr>
+            </thead>
+            <tbody id="projectTableBody"></tbody>
+        </table>
+    </div>
+    <div id="empty" class="empty" style="display:none;">暂无项目</div>
+    <div id="errorBox" class="error"></div>
+</body>
+</html>
+
+

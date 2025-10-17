@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>临时分支管理</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif; margin: 24px; }
+        h1 { margin: 0 0 8px; font-size: 20px; }
+        .muted { color: #6e7781; font-size: 13px; margin-bottom: 18px; }
+        .section { margin-top: 16px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #eaecef; padding: 8px 10px; text-align: left; font-size: 14px; }
+        th { background: #f6f8fa; }
+        .error { color: #d1242f; margin-top: 8px; }
+        .empty { color: #6e7781; padding: 16px 0; }
+        a { color: #0969da; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .back { display: inline-block; margin-bottom: 8px; }
+        .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        input[type="text"] { padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px; width: 220px; }
+        button { padding: 6px 12px; border: 1px solid #1f883d; background: #2da44e; color: #fff; border-radius: 6px; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: not-allowed; }
+        .grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
+        /* 固定高度的滚动容器，仅用于分支列表区域 */
+        .scroll-branch { max-height: 320px; overflow-y: auto; }
+        .branch-actions { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .btn { padding: 6px 12px; border: 1px solid #1f883d; background: #2da44e; color: #fff; border-radius: 6px; cursor: pointer; }
+        .btn.secondary { border-color: #8b949e; background: #6e7781; }
+        .btn:disabled { opacity: .6; cursor: not-allowed; }
+        .btn.small { padding: 4px 8px; font-size: 12px; border-radius: 4px; }
+        .btn.danger { border-color: #d1242f; background: #cf222e; }
+        /* 合并记录限定高度（调高避免过矮），超出滚动 */
+        .scroll-merge { max-height: 260px; overflow-y: auto; }
+        .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tag { display: inline-block; padding: 2px 6px; font-size: 12px; border: 1px solid #d0d7de; border-radius: 999px; background: #f6f8fa; color: #57606a; }
+        /* 合并状态样式 */
+        .status { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .status-running { color: #8a6d3b; background: #fff3cd; border-color: #ffe69c; }
+        .status-running .status-dot { background: #f0ad4e; }
+        .status-fail { color: #842029; background: #f8d7da; border-color: #f5c2c7; }
+        .status-fail .status-dot { background: #dc3545; }
+        .status-success { color: #0f5132; background: #d1e7dd; border-color: #badbcc; }
+        .status-success .status-dot { background: #198754; }
+        /* Modal */
+        .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; z-index: 9999; }
+        .modal { background: #fff; width: 1120px; max-width: 92vw; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.2); overflow: hidden; }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 24px 32px; border-bottom: 1px solid #eaecef; }
+        .modal-title { font-size: 32px; font-weight: 600; }
+        .modal-close { background: transparent; border: none; cursor: pointer; font-size: 36px; line-height: 1; color: #57606a; }
+        .modal-body { padding: 32px; max-height: 60vh; overflow: auto; }
+        .modal-body pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 26px; margin: 0; }
+        /* Toast */
+        .toast { position: fixed; left: 50%; top: 24px; transform: translateX(-50%); background: rgba(25,135,84,.95); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px; z-index: 10000; display: none; max-width: 80vw; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+    </style>
+    <script>
+        function getSavedUser() {
+            const v = (localStorage.getItem('mergeUser') || '').trim();
+            return v || '';
+        }
+
+        function getUserHeadersOrNull(explicitUser) {
+            const user = (explicitUser !== undefined ? explicitUser : getSavedUser());
+            if (!user) return null;
+            return { 'user': user };
+        }
+        function getQueryParam(name) {
+            const url = new URL(window.location.href);
+            return url.searchParams.get(name) || '';
+        }
+
+        function saveUser() {
+            const user = document.getElementById('userInput').value.trim();
+            localStorage.setItem('mergeUser', user);
+            const tip = document.getElementById('saveTip');
+            tip.textContent = user ? '已保存用户：' + user : '已清空用户';
+            setTimeout(() => tip.textContent = '', 1500);
+        }
+
+        async function loadMergeList(gitPath) {
+            const tbody = document.getElementById('mergeTableBody');
+            const errorBox = document.getElementById('mergeError');
+            errorBox.textContent = '';
+            try {
+                const headers = getUserHeadersOrNull();
+                if (headers && !headers.user) return; // user 为空不请求
+                const resp = await fetch('/merge/mergeList?gitPath=' + encodeURIComponent(gitPath), headers ? { headers } : undefined);
+                const json = await resp.json();
+                if (json && json.code === 0 && Array.isArray(json.data)) {
+                    if (json.data.length === 0) {
+                        document.getElementById('mergeEmpty').style.display = 'block';
+                        // 清空但避免闪屏：若已空则不操作
+                        if (tbody.childElementCount > 0) tbody.innerHTML = '';
+                        maybeStopMergePolling();
+                    } else {
+                        document.getElementById('mergeEmpty').style.display = 'none';
+                        // 仅渲染最多 8 条，构建快照字符串，内容变化才替换，避免闪屏
+                        const list = json.data.slice(0, 8);
+                        let hasRunningOrException = false;
+                        let rowsHtml = '';
+                        list.forEach((item, idx) => {
+                            const status = (item.mergeStatus || '').toString();
+                            if (isRunningOrException(status)) hasRunningOrException = true;
+                            const branch = (item.branchName || item.tempBranch || '-').toString();
+                            const user = (item.mergeUser || '-').toString();
+                            const mergeTime = (item.mergeTime || '-').toString();
+                            const branches = Array.isArray(item.mergeBranchList) ? item.mergeBranchList : [];
+                            const tagsHtml = branches.map(b => '<span class="tag">' + escapeHtml(b) + '</span>').join('');
+                            const statusClass = getStatusClass(status);
+                            const statusCell = '<span class="status ' + statusClass + '"><span class="status-dot"></span>' + escapeHtml(status || '-') + '</span>';
+                            let opCell = '';
+                            if (isException(status)) {
+                                opCell = '<button class="btn small danger retry-btn" data-branch="' + escapeHtml(branch) + '">重新合并</button>';
+                            } else if (isSuccess(status)) {
+                                opCell = '<a class="btn small" style="border-color:#1f883d;background:#2da44e;text-decoration:none;display:inline-block;" href="https://devops.bk.hypergryph.net/console/pipeline" target="_blank" rel="noopener noreferrer">去发布</a>';
+                            }
+                            rowsHtml += '<tr>' +
+                                '<td>' + (idx + 1) + '</td>' +
+                                '<td>' + escapeHtml(branch) + '</td>' +
+                                '<td>' + escapeHtml(user) + '</td>' +
+                                '<td>' + escapeHtml(mergeTime) + '</td>' +
+                                '<td><div class="tags">' + tagsHtml + '</div></td>' +
+                                '<td>' + statusCell + '</td>' +
+                                '<td>' + opCell + '</td>' +
+                                '</tr>';
+                        });
+                        if (tbody.dataset.snapshot !== rowsHtml) {
+                            // 仅在变化时更新 DOM
+                            tbody.innerHTML = rowsHtml;
+                            tbody.dataset.snapshot = rowsHtml;
+                        }
+                        // 根据状态决定是否轮询
+                        if (hasRunningOrException) {
+                            startMergePolling(gitPath);
+                        } else {
+                            maybeStopMergePolling();
+                        }
+                    }
+                } else {
+                    throw new Error((json && json.message) || '响应格式异常');
+                }
+            } catch (e) {
+                errorBox.textContent = '加载合并记录失败：' + e.message;
+            }
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function isRunningOrException(status) {
+            if (!status) return false;
+            const s = String(status).toLowerCase();
+            // 兼容中英文状态
+            if (s.includes('running') || s.includes('合并中')) return true;
+            if (s.includes('fail') || s.includes('异常')) return true;
+            return false;
+        }
+
+        function isException(status) {
+            if (!status) return false;
+            const s = String(status).toLowerCase();
+            return s.includes('fail') || s.includes('异常');
+        }
+
+        function getStatusClass(status) {
+            const s = String(status || '').toLowerCase();
+            if (s.includes('running') || s.includes('合并中')) return 'status-running';
+            if (s.includes('fail') || s.includes('异常')) return 'status-fail';
+            if (s.includes('success') || s.includes('完成')) return 'status-success';
+            return '';
+        }
+
+        function isSuccess(status) {
+            const s = String(status || '').toLowerCase();
+            return s.includes('success') || s.includes('完成');
+        }
+
+        function isAllCompleted(statusList) {
+            if (!Array.isArray(statusList) || statusList.length === 0) return false;
+            return statusList.every(s => {
+                const v = String(s || '').toLowerCase();
+                return v.includes('success') || v.includes('完成');
+            });
+        }
+
+        function startMergePolling(gitPath) {
+            if (window.__mergeListTimerId) return; // 已在轮询
+            window.__mergeListTimerId = setInterval(() => loadMergeList(gitPath), 1000);
+        }
+
+        function stopMergePolling() {
+            if (window.__mergeListTimerId) {
+                clearInterval(window.__mergeListTimerId);
+                window.__mergeListTimerId = null;
+            }
+        }
+
+        function maybeStopMergePolling() {
+            // 如果表格已渲染且状态全是完成，则停止轮询（状态列索引已调整为第 6 列）
+            const rows = Array.from(document.querySelectorAll('#mergeTableBody tr'));
+            const statuses = rows.map(tr => (tr.children[5] && tr.children[5].textContent) || '');
+            if (rows.length > 0 && isAllCompleted(statuses)) {
+                stopMergePolling();
+            }
+        }
+
+        async function loadBranchList(gitPath) {
+            const tbody = document.getElementById('branchTableBody');
+            const errorBox = document.getElementById('branchError');
+            tbody.innerHTML = '';
+            errorBox.textContent = '';
+            try {
+                const headers = getUserHeadersOrNull();
+                if (headers && !headers.user) return;
+                const resp = await fetch('/merge/branchList?gitPath=' + encodeURIComponent(gitPath), headers ? { headers } : undefined);
+                const json = await resp.json();
+                if (json && json.code === 0 && Array.isArray(json.data)) {
+                    if (json.data.length === 0) {
+                        document.getElementById('branchEmpty').style.display = 'block';
+                        updateMergeButtonState();
+                    } else {
+                        document.getElementById('branchEmpty').style.display = 'none';
+                        window.__selectedBranches = new Set();
+                        json.data.forEach((name, idx) => {
+                            const tr = document.createElement('tr');
+                            const tdCheck = document.createElement('td');
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.addEventListener('change', () => {
+                                if (checkbox.checked) {
+                                    window.__selectedBranches.add(name);
+                                } else {
+                                    window.__selectedBranches.delete(name);
+                                }
+                                updateMergeButtonState();
+                            });
+                            tdCheck.appendChild(checkbox);
+                            const tdIdx = document.createElement('td');
+                            tdIdx.textContent = String(idx + 1);
+                            const tdName = document.createElement('td');
+                            tdName.textContent = name || '-';
+                            tr.appendChild(tdCheck);
+                            tr.appendChild(tdIdx);
+                            tr.appendChild(tdName);
+                            tbody.appendChild(tr);
+                        });
+                        updateMergeButtonState();
+                    }
+                } else {
+                    throw new Error((json && json.message) || '响应格式异常');
+                }
+            } catch (e) {
+                errorBox.textContent = '加载分支列表失败：' + e.message;
+                updateMergeButtonState();
+            }
+        }
+
+        function updateMergeButtonState() {
+            const mergeBtn = document.getElementById('mergeBtn');
+            const count = window.__selectedBranches ? window.__selectedBranches.size : 0;
+            mergeBtn.disabled = !(count > 1);
+        }
+
+        async function onMergeSelected() {
+            const gitPath = getQueryParam('gitPath');
+            const mergeBtn = document.getElementById('mergeBtn');
+            const errorBox = document.getElementById('branchError');
+            errorBox.textContent = '';
+            const count = window.__selectedBranches ? window.__selectedBranches.size : 0;
+            if (count <= 1) return; // 未满足条件
+            const mergeBranchList = Array.from(window.__selectedBranches);
+            const baseHeaders = getUserHeadersOrNull();
+            if (baseHeaders && !baseHeaders.user) { showToast('请先设置用户标识'); return; }
+            const headers = baseHeaders ? { 'Content-Type': 'application/json', ...baseHeaders } : { 'Content-Type': 'application/json' };
+            try {
+                // 点击即启动轮询，保证列表马上进入刷新
+                startMergePolling(gitPath);
+                mergeBtn.disabled = true;
+                mergeBtn.textContent = '合并中...';
+                const resp = await fetch('/merge/mergeBranch', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ gitPath, mergeBranchList })
+                });
+                const json = await resp.json();
+                if (!json || json.code !== 0) throw new Error((json && json.message) || '合并接口异常');
+                // 如果有 mergeMsg，优先弹出并支持换行
+                const rawMsg = json.data && json.data.mergeMsg;
+                const mergeMsg = (rawMsg === null || rawMsg === undefined) ? '' : String(rawMsg);
+                if (mergeMsg.trim()) {
+                    const text = mergeMsg.replace(/\r\n/g, '\n').replace(/\\n/g, '\n');
+                    showModal(text);
+                } else {
+                    // 无 mergeMsg 时，轻提示
+                    if (window.showToast) { window.showToast('合并完成'); } else { alert('合并完成'); }
+                }
+                // 刷新合并记录与分支列表
+                loadMergeList(gitPath);
+                loadBranchList(gitPath);
+                // 轮询已在点击时启动
+            } catch (e) {
+                errorBox.textContent = '发起合并失败：' + e.message;
+            } finally {
+                mergeBtn.textContent = '合并所选';
+                updateMergeButtonState();
+            }
+        }
+
+        function onRefreshBranches() {
+            const gitPath = getQueryParam('gitPath');
+            loadBranchList(gitPath);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // 委托处理“重新合并”点击
+            const tbody = document.getElementById('mergeTableBody');
+            tbody.addEventListener('click', (e) => {
+                const target = e.target;
+                if (target && target.classList && target.classList.contains('retry-btn')) {
+                    const branchName = target.getAttribute('data-branch') || '';
+                    onRetryMergeBranch(branchName, target);
+                }
+            });
+        }, { once: false });
+
+        async function onRetryMergeBranch(branchName, btnEl) {
+            const gitPath = getQueryParam('gitPath');
+            const errorBox = document.getElementById('mergeError');
+            errorBox.textContent = '';
+            if (!branchName) return;
+            const baseHeaders = getUserHeadersOrNull();
+            if (baseHeaders && !baseHeaders.user) { showToast('请先设置用户标识'); return; }
+            const headers = baseHeaders ? { 'Content-Type': 'application/json', ...baseHeaders } : { 'Content-Type': 'application/json' };
+            try {
+                if (btnEl) {
+                    btnEl.disabled = true;
+                    btnEl.textContent = '合并中...';
+                }
+                const resp = await fetch('/merge/retryMergeBranch', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ gitPath, branchName })
+                });
+                const json = await resp.json();
+                if (!json || json.code !== 0) throw new Error((json && json.message) || '重试接口异常');
+                const rawMsg = json.data && json.data.mergeMsg;
+                const mergeMsg = (rawMsg === null || rawMsg === undefined) ? '' : String(rawMsg);
+                if (mergeMsg.trim()) {
+                    const text = mergeMsg.replace(/\r\n/g, '\n').replace(/\\n/g, '\n');
+                    showModal(text);
+                } else {
+                    // 无 mergeMsg 时，轻提示
+                    if (window.showToast) { window.showToast('合并完成'); } else { alert('合并完成'); }
+                }
+                loadMergeList(gitPath);
+                startMergePolling(gitPath);
+            } catch (e) {
+                errorBox.textContent = '重试合并失败：' + e.message;
+            } finally {
+                // 请求返回后立即恢复按钮状态；后续由轮询渲染接管展示
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.textContent = '重新合并';
+                }
+            }
+        }
+
+        function showModal(text) {
+            const mask = document.getElementById('modalMask');
+            const pre = document.getElementById('modalContent');
+            pre.textContent = String(text || '');
+            mask.style.display = 'flex';
+        }
+
+        function closeModal() {
+            const mask = document.getElementById('modalMask');
+            mask.style.display = 'none';
+        }
+
+        function showToast(text, duration = 1600) {
+            let el = document.getElementById('toast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'toast';
+                el.className = 'toast';
+                document.body.appendChild(el);
+            }
+            el.textContent = String(text || '');
+            // 强制定位到页面上方居中
+            el.style.top = '24px';
+            el.style.bottom = '';
+            el.style.left = '50%';
+            el.style.transform = 'translateX(-50%)';
+            el.style.display = 'block';
+            clearTimeout(window.__toastTimer);
+            window.__toastTimer = setTimeout(() => { el.style.display = 'none'; }, duration);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const gitPath = getQueryParam('gitPath');
+            const projectName = getQueryParam('projectName');
+            document.getElementById('title').textContent = projectName || '项目详情';
+            document.getElementById('gitPathText').textContent = gitPath || '-';
+
+            const savedUser = localStorage.getItem('mergeUser') || '';
+            document.getElementById('userInput').value = savedUser;
+            // 详情页用户标识模块不展示
+            const bar = document.getElementById('userBar');
+            if (bar) bar.style.display = 'none';
+
+            if (!gitPath) {
+                document.getElementById('mergeError').textContent = '缺少 gitPath 参数';
+                document.getElementById('branchError').textContent = '缺少 gitPath 参数';
+                return;
+            }
+            loadMergeList(gitPath);
+            loadBranchList(gitPath);
+        });
+    </script>
+</head>
+<body>
+    <div id="modalMask" class="modal-mask" onclick="closeModal()">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-title">合并冲突提示</div>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <pre id="modalContent"></pre>
+            </div>
+        </div>
+    </div>
+    <a class="back" href="index.html">← 返回列表</a>
+    <h1 id="title">项目详情</h1>
+    <div class="muted">Git 路径：<span id="gitPathText">-</span></div>
+    <div class="toolbar" id="userBar">
+        <label for="userInput">用户标识（请求头 user，用于部分接口）</label>
+        <input id="userInput" type="text" placeholder="例如：kerwin" />
+        <button onclick="saveUser()">保存</button>
+        <span id="saveTip" class="muted"></span>
+    </div>
+
+    <div class="grid">
+        <section class="section">
+            <h2 style="font-size:16px; margin: 0 0 8px;">合并记录</h2>
+            <div class="scroll-merge">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 80px;">序号</th>
+                            <th>分支名称</th>
+                            <th>合并人</th>
+                            <th>操作时间</th>
+                            <th>包含分支</th>
+                            <th>合并状态</th>
+                            <th style="width: 120px;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mergeTableBody"></tbody>
+                </table>
+            </div>
+            <div id="mergeEmpty" class="empty" style="display:none;">暂无合并记录</div>
+            <div id="mergeError" class="error"></div>
+        </section>
+
+        <section class="section">
+            <h2 style="font-size:16px; margin: 0 0 8px;">分支列表</h2>
+            <div class="branch-actions">
+                <div class="muted">选择多个分支以合并</div>
+                <div>
+                    <button class="btn secondary" onclick="onRefreshBranches()">查询分支</button>
+                    <button id="mergeBtn" class="btn" onclick="onMergeSelected()" disabled>合并所选</button>
+                </div>
+            </div>
+            <div class="scroll-branch">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 48px;">选择</th>
+                            <th style="width: 80px;">序号</th>
+                            <th>分支名称</th>
+                        </tr>
+                    </thead>
+                    <tbody id="branchTableBody"></tbody>
+                </table>
+            </div>
+            <div id="branchEmpty" class="empty" style="display:none;">暂无分支</div>
+            <div id="branchError" class="error"></div>
+        </section>
+    </div>
+</body>
+</html>
+
+

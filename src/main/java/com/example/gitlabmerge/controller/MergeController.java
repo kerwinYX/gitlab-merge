@@ -123,4 +123,10 @@ public class MergeController {
         return CommonResult.success(true);
     }
 
+    @GetMapping("/checkUser")
+    public CommonResult<Boolean> initUserToken(@RequestParam("user") String user) {
+        return CommonResult.success(StringUtils.isNotBlank(userService.getUserToken(user)));
+    }
+
+
 }
