@@ -41,7 +41,8 @@
             const tip = document.getElementById('saveTip');
             const notice = document.getElementById('userNotice');
             const tableWrap = document.getElementById('tableWrap');
-            tip.textContent = user ? '已保存用户：' + user : '已清空用户';
+            // tip.textContent = user ? '已保存用户：' + user : '已清空用户';
+            tip.textContent = user ? '：' + user : '已清空用户';
             setTimeout(() => tip.textContent = '', 1500);
             if (!user) {
                 localStorage.setItem('userValidated', 'false');
@@ -140,7 +141,7 @@
     <div class="toolbar">
         <label for="userInput">用户标识（作为请求头 user，用于部分接口）</label>
         <input id="userInput" type="text" placeholder="输入用户名" />
-        <button onclick="saveUser()">保存</button>
+        <button onclick="saveUser()">登录</button>
         <span id="saveTip" class="muted"></span>
     </div>
     <div id="userNotice" class="notice"></div>

@@ -63,7 +63,7 @@
         function getUserHeadersOrNull(explicitUser) {
             const user = (explicitUser !== undefined ? explicitUser : getSavedUser());
             if (!user) return null;
-            return { 'user': user };
+            return { 'user': encodeURIComponent(user) };
         }
         function getQueryParam(name) {
             const url = new URL(window.location.href);
