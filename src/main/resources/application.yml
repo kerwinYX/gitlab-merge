@@ -7,8 +7,8 @@ spring:
   redis:
     database: 19
     port: 6379
-    host: r-uf65yfcoxr4hmppfi1.redis.rds.aliyuncs.com
-    password: '#JiojklAd33b3f211e276#@d76'
+    host: xxxx
+    password: xxx
 
 logging:
   level:
